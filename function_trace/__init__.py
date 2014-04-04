@@ -41,7 +41,9 @@ def _name(f):
 
 def stdout_tracer(f, *args, **kwargs):
     global indent_level
-    print "%s- %s(%s)" % (indent_level * indentchar, _name(f), ", ".join(map(repr, args)))
+    print "%s- %s(%s)" % (indent_level * indentchar, _name(f),
+                          ", ".join(map(repr, args) +
+                                    map(lambda i: "%s=%s" % (i[0], repr(i[1])), kwargs.items())))
     indent_level += 1
     try:
         r = f(*args, **kwargs)
