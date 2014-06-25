@@ -29,7 +29,7 @@ with trace_on([Class1, module1, Class2, module2]):
 '''
 
 from contextlib import contextmanager, closing
-from inspect import isclass
+from inspect import isclass, ismethod
 import threading
 import os
 
@@ -59,7 +59,35 @@ class Formatter(object):
 class Tracer(threading.local):
     def __init__(self, formatter=None):
         self.level = 0
+        self.max_depth = None
         self.formatter = formatter or Formatter()
+
+    def trace(self, f, args, kwargs, additional_depth=None):
+        prev_max = self.max_depth
+        try:
+            if additional_depth is not None:  # None means unlimited
+                total_depth = self.level + additional_depth
+                if self.max_depth is not None:
+                    self.max_depth = min(self.max_depth, total_depth)
+                else:
+                    self.max_depth = total_depth
+            if (self.max_depth is None or (self.level < self.max_depth)):
+                self.trace_in(f, args, kwargs)
+                self.level += 1
+
+                try:
+                    r = f(*args, **kwargs)
+                except Exception as e:
+                    r = e  # print the exception as the return val
+                    raise
+                finally:
+                    self.level -= 1
+                    self.trace_out(r)
+                return r
+            else:
+                return f(*args, **kwargs)
+        finally:
+            self.max_depth = prev_max
 
     def close(self):
         pass
@@ -69,18 +97,11 @@ class StdoutTracer(Tracer):
     def __init__(self):
         super(StdoutTracer, self).__init__()
 
-    def trace(self, f, *args, **kwargs):
+    def trace_in(self, f, args, kwargs):
         print self.formatter.format_input(self.level, f, args, kwargs)
-        self.level += 1
-        try:
-            r = f(*args, **kwargs)
-        except Exception as e:
-            r = e  # print the exception as the return val
-            raise
-        finally:
-            self.level -= 1
-            print self.formatter.format_output(self.level, r)
-        return r
+
+    def trace_out(self, r):
+        print self.formatter.format_output(self.level, r)
 
 
 class PerThreadFileTracer(Tracer):
@@ -91,26 +112,19 @@ class PerThreadFileTracer(Tracer):
             os.makedirs(d)
         self.outputfile = open(filename, 'w')
 
-    def trace(self, f, *args, **kwargs):
+    def trace_in(self, f, *args, **kwargs):
         self.outputfile.write(self.formatter.format_input(self.level, f, args, kwargs) + "\n")
-        self.level += 1
-        try:
-            r = f(*args, **kwargs)
-        except Exception as e:
-            r = e  # print the exception as the return val
-            raise
-        finally:
-            self.level -= 1
-            self.outputfile.write(self.formatter.format_output(self.level, r) + "\n")
-        return r
+
+    def trace_out(self, r):
+        self.outputfile.write(self.formatter.format_output(self.level, r) + "\n")
 
     def close(self):
         self.outputfile.close()
 
 
-def add_trace(f, tracer):
+def add_trace(f, tracer, depth=None):
     def traced_fn(*args, **kwargs):
-        return tracer.trace(f, *args, **kwargs)
+        return tracer.trace(f, args, kwargs, additional_depth=depth)
     traced_fn.trace = True  # set flag so that we don't add trace more than once
     return traced_fn
 
@@ -125,22 +139,37 @@ def traceable(f):
         and not getattr(f, 'trace', None)  # already being traced
 
 
+def _get_func(m):
+    '''Returns function given a function or method'''
+    if ismethod(m):
+        return m.im_func
+    else:
+        return m
+
+
 @contextmanager
-def trace_on(objs, include_hidden=False, tracer=None, skip=None):
+def trace_on(objs, include_hidden=False, tracer=None, depths=None):
     tracer = tracer or StdoutTracer()
     origs = {}
-    skip = skip or []
+    depths = depths or {}
+
+    # converts methods to functions, since that is what's in __dict__
+    f_depths = {}
+    for (k, v) in depths.items():
+        f_depths[_get_func(k)] = v
+    depths = f_depths
+
     for o in objs:
         replacements = {}
         for k in o.__dict__.keys():
             v = o.__dict__[k]
             if traceable(v) and getattr(v, '__name__', None) is not '__repr__' \
-               and v not in skip \
+               and (v not in depths or depths[v] >= 0) \
                and (include_hidden or
                     not (include_hidden or k.startswith("_"))):
                 replacements[k] = v
-                # print "Replacing: " + k
-                setattr(o, k, add_trace(v, tracer))
+                # print "Replacing: %s %s , depth %s" % (k, v, depths.get(v, None))
+                setattr(o, k, add_trace(v, tracer, depth=depths.get(v, None)))
         origs[o] = replacements
     # print origs
     with closing(tracer):
