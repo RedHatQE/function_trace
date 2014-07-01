@@ -29,16 +29,25 @@ with trace_on([Class1, module1, Class2, module2]):
 '''
 
 from contextlib import contextmanager, closing
-from inspect import isclass, ismethod
+from inspect import isclass, ismethod, getmembers
 import threading
 import os
 
 indentchar = "|   "
+thread_locals = threading.local()
 
 
 def _name(f):
-    return "%s.%s" % (getattr(f, '__module__', "module"),
-                      getattr(f, '__name__', "name"))
+    mattr = getattr(f, '__module__', None)
+    if mattr:
+        nattr = getattr(f, "__name__", None)
+    else:
+        # partials
+        fattr = getattr(f, 'func', None)
+        if fattr:
+            mattr = getattr(fattr, '__module__')
+            nattr = getattr(fattr, '__name__') + '__partial__'
+    return "%s.%s" % ((mattr or "module"), (nattr or "name"))
 
 
 class Formatter(object):
@@ -56,13 +65,14 @@ class Formatter(object):
         return "%s-> %s" % (level * indentchar, repr(returnval))
 
 
-class Tracer(threading.local):
+class Tracer(object):
     def __init__(self, formatter=None):
         self.level = 0
         self.max_depth = None
         self.formatter = formatter or Formatter()
 
     def trace(self, f, args, kwargs, additional_depth=None):
+        # print "tracing " + str(f)
         prev_max = self.max_depth
         try:
             if additional_depth is not None:  # None means unlimited
@@ -110,16 +120,22 @@ class PerThreadFileTracer(Tracer):
         d = os.path.dirname(filename)
         if not os.path.exists(d):
             os.makedirs(d)
-        self.outputfile = open(filename, 'w')
 
-    def trace_in(self, f, *args, **kwargs):
-        self.outputfile.write(self.formatter.format_input(self.level, f, args, kwargs) + "\n")
+        # keep file we're writing to outside the state of this instance
+        # prevents replaced functions from trying to write to the wrong file
+        thread_locals.outputfile = open(filename, 'w')
+        print "opening %s" % filename
+
+    def trace_in(self, f, args, kwargs):
+        # print "in %s %s %s %s" % (str(thread_locals.outputfile), f, args, kwargs)
+        thread_locals.outputfile.write(self.formatter.format_input(self.level, f, args, kwargs) + "\n")
 
     def trace_out(self, r):
-        self.outputfile.write(self.formatter.format_output(self.level, r) + "\n")
+        thread_locals.outputfile.write(self.formatter.format_output(self.level, r) + "\n")
 
     def close(self):
-        self.outputfile.close()
+        # print "closing " + str(thread_locals.outputfile)
+        thread_locals.outputfile.close()
 
 
 def add_trace(f, tracer, depth=None):
@@ -134,9 +150,17 @@ def traceable(f):
        Callable and not a class.  Can override this behavior by
        replacing this function
     '''
-    return callable(f)\
-        and not isclass(f)\
-        and not getattr(f, 'trace', None)  # already being traced
+    return (callable(f)
+            and not isclass(f)
+            and not getattr(f, 'trace', None))  # already being traced
+
+
+def _defined_this_module(o, f):
+    '''Returns true if f is defined in the module o (or true if o is a class)'''
+    if isclass(o):
+        return True
+    else:
+        return o.__name__ == getattr(f, '__module__', None)
 
 
 def _get_func(m):
@@ -159,16 +183,17 @@ def trace_on(objs, include_hidden=False, tracer=None, depths=None):
         f_depths[_get_func(k)] = v
     depths = f_depths
 
-    for o in objs:
+    for o in set(objs):
         replacements = {}
         for k in o.__dict__.keys():
             v = o.__dict__[k]
             if traceable(v) and getattr(v, '__name__', None) is not '__repr__' \
                and (v not in depths or depths[v] >= 0) \
+               and _defined_this_module(o, v) \
                and (include_hidden or
                     not (include_hidden or k.startswith("_"))):
                 replacements[k] = v
-                # print "Replacing: %s %s , depth %s" % (k, v, depths.get(v, None))
+                # print "Replacing: %s %s %s , depth %s" % (k, o, v, depths.get(v, None))
                 setattr(o, k, add_trace(v, tracer, depth=depths.get(v, None)))
         origs[o] = replacements
     # print origs
@@ -179,4 +204,19 @@ def trace_on(objs, include_hidden=False, tracer=None, depths=None):
             for o in objs:
                 originals = origs[o]
                 for k in originals.keys():
+                    if getattr(originals[k], 'trace', None):
+                        raise Exception("Original is lost: %s" % str(originals[k]))
+                    # print "Restoring: %s %s %s" % (k, o, originals[k])
+
                     setattr(o, k, originals[k])
+
+
+def all(module):
+    '''Returns all classes in the given module plus the module itself.'''
+
+    def traceable_class(c):
+        return isclass(c) and not c.__name__.startswith('_') \
+            and getattr(c, '__module__', None) == module.__name__  # make sure class was defined in that module
+
+    matches = [i[1] for i in getmembers(module, traceable_class)]
+    return [module] + matches
