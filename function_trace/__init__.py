@@ -124,7 +124,6 @@ class PerThreadFileTracer(Tracer):
         # keep file we're writing to outside the state of this instance
         # prevents replaced functions from trying to write to the wrong file
         thread_locals.outputfile = open(filename, 'w')
-        print "opening %s" % filename
 
     def trace_in(self, f, args, kwargs):
         # print "in %s %s %s %s" % (str(thread_locals.outputfile), f, args, kwargs)

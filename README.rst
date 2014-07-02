@@ -37,6 +37,19 @@ Options
 * ``include_hidden`` if set to True, also trace functions whose name
   starts with ``_``.  Note, the ``__repr__`` function will never be
   traced.
+* ``depths`` a dict where the keys are functions/methods and the
+  values are integers representing the depth to which you want to
+  trace that function/method.  For example a depth of 0 means "do not
+  trace this function at all", even if it calls functions that are
+  being traced.  A depth of 1 will trace this function but skip all
+  tracing until it returns.  A depth of 2 will trace another level
+  deeper.  Note, the depths represent the depth of the trace output,
+  NOT the python call stack.
+* ``tracer`` lets you specify a custom tracer object.  The simplest
+  way to create it is to extend the ``Tracer`` class and override the
+  ``trace_in`` and ``trace_out`` methods.  With a customm tracer you
+  can do things like write the trace in any format, like HTML, JSON,
+  XML etc, or send it over the network.
 
 
 Examples
@@ -46,7 +59,10 @@ Examples
 
   from function_trace import trace_on
 
-  with trace_on([Class1, module1, Class2, module2], include_hidden=True):
+  with trace_on([Class1, module1, Class2, module2], include_hidden=True,
+                depths={module1.check_thing: 1,
+                        module2.unimportant_thing: 0
+                        Class1.silly_thing: 0}):
       module1.function1("arg1", "arg2", option=True)
       x = new Class1()
       x.method1(arg1, arg2)
