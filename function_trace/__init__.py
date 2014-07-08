@@ -87,7 +87,7 @@ class Tracer(object):
 
                 try:
                     r = f(*args, **kwargs)
-                except Exception as e:
+                except BaseException as e:
                     r = e  # print the exception as the return val
                     raise
                 finally:
