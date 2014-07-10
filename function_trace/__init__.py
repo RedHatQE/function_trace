@@ -29,6 +29,7 @@ with trace_on([Class1, module1, Class2, module2]):
 '''
 
 from contextlib import contextmanager, closing
+from functools import wraps
 from inspect import isclass, ismethod, getmembers
 import threading
 import os
@@ -138,6 +139,7 @@ class PerThreadFileTracer(Tracer):
 
 
 def add_trace(f, tracer, depth=None):
+    @wraps(f)
     def traced_fn(*args, **kwargs):
         return tracer.trace(f, args, kwargs, additional_depth=depth)
     traced_fn.trace = True  # set flag so that we don't add trace more than once

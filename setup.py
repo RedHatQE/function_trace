@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 setup(
     name="function_trace",
-    version="1.0.2",
+    version="1.0.3",
     packages=find_packages(),
 
     # metadata for upload to PyPI
