@@ -29,7 +29,6 @@ with trace_on([Class1, module1, Class2, module2]):
 '''
 
 from contextlib import contextmanager, closing
-from functools import wraps
 from inspect import isclass, ismethod, getmembers
 import threading
 import os
@@ -138,11 +137,17 @@ class PerThreadFileTracer(Tracer):
         thread_locals.outputfile.close()
 
 
+def _copy_attrs(old, new):
+    for a in ('__name__', '__doc__', '__module__'):
+        if hasattr(old, a):
+            setattr(new, a, getattr(old, a))
+
+
 def add_trace(f, tracer, depth=None):
-    @wraps(f)
     def traced_fn(*args, **kwargs):
         return tracer.trace(f, args, kwargs, additional_depth=depth)
     traced_fn.trace = True  # set flag so that we don't add trace more than once
+    #_copy_attrs(f, traced_fn)
     return traced_fn
 
 
