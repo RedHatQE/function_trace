@@ -29,12 +29,13 @@ with trace_on([Class1, module1, Class2, module2]):
 '''
 
 from contextlib import contextmanager, closing
-from inspect import isclass, ismethod, getmembers
-import threading
+import inspect
 import os
+import sys
+import itertools
+import opcode
 
 indentchar = "|   "
-thread_locals = threading.local()
 
 
 def _name(f):
@@ -56,173 +57,147 @@ class Formatter(object):
 
     def format_input(self, level, f, args, kwargs):
         return "%s- %s(%s)" % \
-            (level * indentchar, _name(f),
+            (level * indentchar, f,
              ", ".join(map(repr, args) +
                        map(lambda i: "%s=%s" % (i[0], repr(i[1])),
                            kwargs.items())))
 
-    def format_output(self, level, returnval):
-        return "%s-> %s" % (level * indentchar, repr(returnval))
+    def format_output(self, level, returnval, exception):
+        return "%s-> %s%s" % (level * indentchar,
+                              "!!!" if exception else "",
+                              repr(returnval))
+
+
+def _get_code(o):
+    '''Gets the func_code object for the given object.'''
+    if hasattr(o, 'func'):
+        return o.func.func_code
+    if hasattr(o, 'im_func'):
+        return o.im_func.func_code
+    if hasattr(o.__call__, 'im_func'):
+        return o.__call__.im_func.func_code
+    if hasattr(o, 'func_code'):
+        return o.func_code
+    return None
 
 
 class Tracer(object):
-    def __init__(self, formatter=None):
+    def __init__(self, functions, formatter=None, depths=None):
+        self.functions = {_get_code(f): f for f in functions}
+        self.code_objs = set(self.functions.keys())
         self.level = 0
         self.max_depth = None
         self.formatter = formatter or Formatter()
+        self.depths = depths or {}
+        self.lastframe = None
+        #self.additional_depth = None
 
-    def trace(self, f, args, kwargs, additional_depth=None):
-        # print "tracing " + str(f)
-        prev_max = self.max_depth
-        try:
+    def tracefunc(self, frame, event, arg):
+        if event == 'call' and frame.f_code in self.code_objs:
+            # print "code object %s " % frame.f_code
+            f = self.functions[frame.f_code]
+            additional_depth = self.depths.get(f, None)
+            # print "addl: %s, max: %s " % (additional_depth, self.max_depth)
             if additional_depth is not None:  # None means unlimited
                 total_depth = self.level + additional_depth
                 if self.max_depth is not None:
                     self.max_depth = min(self.max_depth, total_depth)
                 else:
                     self.max_depth = total_depth
+                # print "max: %s" % self.max_depth
             if (self.max_depth is None or (self.level < self.max_depth)):
-                self.trace_in(f, args, kwargs)
+                args = inspect.getargvalues(frame)
+                self.trace_in(_name(f),
+                              [],
+                              args.locals)
                 self.level += 1
-
-                try:
-                    r = f(*args, **kwargs)
-                except BaseException as e:
-                    r = e  # print the exception as the return val
-                    raise
-                finally:
-                    self.level -= 1
-                    self.trace_out(r)
-                return r
             else:
-                return f(*args, **kwargs)
-        finally:
-            self.max_depth = prev_max
+                return None
+
+        elif event == 'return' and not frame.f_exc_type and frame.f_code in self.code_objs:
+            if self.lastframe is frame:
+                self.lastframe = None
+            else:
+                self.level -= 1
+                self.trace_out(arg)
+        elif event == 'exception' and frame.f_code in self.code_objs:
+            self.lastframe = frame
+            self.level -= 1
+            self.trace_out(arg[0], exception=True)
+        return self.tracefunc
 
     def close(self):
         pass
 
 
 class StdoutTracer(Tracer):
-    def __init__(self):
-        super(StdoutTracer, self).__init__()
+    def __init__(self, functions, formatter=None, depths=None):
+        super(StdoutTracer, self).__init__(functions, formatter=formatter, depths=depths)
 
     def trace_in(self, f, args, kwargs):
         print self.formatter.format_input(self.level, f, args, kwargs)
 
-    def trace_out(self, r):
-        print self.formatter.format_output(self.level, r)
+    def trace_out(self, r, exception=False):
+        print self.formatter.format_output(self.level, r, exception)
 
 
 class PerThreadFileTracer(Tracer):
-    def __init__(self, filename=None):
-        super(PerThreadFileTracer, self).__init__()
+    def __init__(self,  functions, formatter=None, depths=None, filename=None):
+        super(PerThreadFileTracer, self).__init__(functions, formatter=formatter, depths=depths)
         d = os.path.dirname(filename)
         if not os.path.exists(d):
             os.makedirs(d)
 
         # keep file we're writing to outside the state of this instance
         # prevents replaced functions from trying to write to the wrong file
-        thread_locals.outputfile = open(filename, 'w')
+        self.outputfile = open(filename, 'w')
 
     def trace_in(self, f, args, kwargs):
-        # print "in %s %s %s %s" % (str(thread_locals.outputfile), f, args, kwargs)
-        thread_locals.outputfile.write(self.formatter.format_input(self.level, f, args, kwargs) + "\n")
+        # print "in %s %s %s %s" % (str(self.outputfile), f, args, kwargs)
+        self.outputfile.write(self.formatter.format_input(self.level, f, args, kwargs) + "\n")
 
-    def trace_out(self, r):
-        thread_locals.outputfile.write(self.formatter.format_output(self.level, r) + "\n")
+    def trace_out(self, r, exception=False):
+        self.outputfile.write(self.formatter.format_output(self.level, r, exception) + "\n")
 
     def close(self):
-        # print "closing " + str(thread_locals.outputfile)
-        thread_locals.outputfile.close()
+        print "closing " + str(self.outputfile)
+        self.outputfile.close()
 
 
-def _copy_attrs(old, new):
-    for a in ('__name__', '__doc__', '__module__'):
-        if hasattr(old, a):
-            setattr(new, a, getattr(old, a))
-
-
-def add_trace(f, tracer, depth=None):
-    def traced_fn(*args, **kwargs):
-        return tracer.trace(f, args, kwargs, additional_depth=depth)
-    traced_fn.trace = True  # set flag so that we don't add trace more than once
-    #_copy_attrs(f, traced_fn)
-    return traced_fn
-
-
-def traceable(f):
-    '''Returns true if f is the sort of object we want to trace, eg
-       Callable and not a class.  Can override this behavior by
-       replacing this function
-    '''
-    return (callable(f)
-            and not isclass(f)
-            and not getattr(f, 'trace', None))  # already being traced
-
-
-def _defined_this_module(o, f):
+def _defined_this_module(parent, child):
     '''Returns true if f is defined in the module o (or true if o is a class)'''
-    if isclass(o):
-        return True
-    else:
-        return o.__name__ == getattr(f, '__module__', None)
+    if inspect.ismodule(parent):
+        return parent.__name__ == getattr(child, '__module__', None)
+    return True
 
 
-def _get_func(m):
-    '''Returns function given a function or method'''
-    if ismethod(m):
-        return m.im_func
-    else:
-        return m
+def mapcat(f, lst):
+    return list(itertools.chain.from_iterable(map(f, lst)))
+
+
+def all(o, include_hidden=False):
+    '''Return all the functions/methods in the given object.'''
+    def r(x, y):
+        n, v = y
+        if not n.startswith("__")\
+           and (include_hidden or
+                not (include_hidden or n.startswith("_")))\
+           and _defined_this_module(o, v):
+            if inspect.isclass(v):
+                return list(x) + all(v)
+            else:
+                return list(x) + [v]
+        else:
+            return list(x)
+    return reduce(r, inspect.getmembers(o, callable), [])
 
 
 @contextmanager
-def trace_on(objs, include_hidden=False, tracer=None, depths=None):
-    tracer = tracer or StdoutTracer()
-    origs = {}
-    depths = depths or {}
-
-    # converts methods to functions, since that is what's in __dict__
-    f_depths = {}
-    for (k, v) in depths.items():
-        f_depths[_get_func(k)] = v
-    depths = f_depths
-
-    for o in set(objs):
-        replacements = {}
-        for k in o.__dict__.keys():
-            v = o.__dict__[k]
-            if traceable(v) and getattr(v, '__name__', None) is not '__repr__' \
-               and (v not in depths or depths[v] >= 0) \
-               and _defined_this_module(o, v) \
-               and (include_hidden or
-                    not (include_hidden or k.startswith("_"))):
-                replacements[k] = v
-                # print "Replacing: %s %s %s , depth %s" % (k, o, v, depths.get(v, None))
-                setattr(o, k, add_trace(v, tracer, depth=depths.get(v, None)))
-        origs[o] = replacements
-    # print origs
+def trace_on(objs=None, tracer=None):
+    tracer = tracer or StdoutTracer(objs)
+    sys.settrace(tracer.tracefunc)
     with closing(tracer):
         try:
             yield
-        finally:  # set all the original values back
-            for o in objs:
-                originals = origs[o]
-                for k in originals.keys():
-                    if getattr(originals[k], 'trace', None):
-                        raise Exception("Original is lost: %s" % str(originals[k]))
-                    # print "Restoring: %s %s %s" % (k, o, originals[k])
-
-                    setattr(o, k, originals[k])
-
-
-def all(module):
-    '''Returns all classes in the given module plus the module itself.'''
-
-    def traceable_class(c):
-        return isclass(c) and not c.__name__.startswith('_') \
-            and getattr(c, '__module__', None) == module.__name__  # make sure class was defined in that module
-
-    matches = [i[1] for i in getmembers(module, traceable_class)]
-    return [module] + matches
+        finally:
+            sys.settrace(None)
