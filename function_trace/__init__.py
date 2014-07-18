@@ -152,30 +152,28 @@ class Tracer(object):
                     pass
             return None
 
-    
+    def _min_depths(self):
+        depths = [fmd[1] for fmd in self.framemaxdepths] or [sys.maxint]
+        return min(depths)
+
     def tracefunc(self, frame, event, arg):
         try:
             if event == 'call':
                 ident = self._get_id(frame)
                 if ident in self.functions:
                     additional_depth = self.depths.get(ident, None)
-                    depths = [fmd[1] for fmd in self.framemaxdepths] or [sys.maxint]
+                    
                     # print depths
-                    min_depth_limit = min(depths)
+                    min_depth_limit = self._min_depths()
 
                     # print "min depth: %s" % min_depth_limit
                     if additional_depth is not None:
-                        # if additional_depth == 0:
-                        #     print "stop tracing on %s" % ident
-                        #     return None
-                        depth_limit = self.level + additional_depth
-                        if depth_limit < min_depth_limit:
-                            min_depth_limit = depth_limit
-                            self.framemaxdepths.append((frame.f_back, depth_limit))
-                            print "new depth limit %s from %s. %s" % (depth_limit, ident, self.framemaxdepths)
-                            # print "pushing %s:%s" % (depth_limit, frame.f_back)
+                        min_depth_limit = min(min_depth_limit, self.level + additional_depth)
 
                     if self.level < min_depth_limit:
+                        if additional_depth is not None:
+                            self.framemaxdepths.append((frame.f_back, min_depth_limit))
+                            print "new depth limit %s from %s. %s" % (min_depth_limit, ident, self.framemaxdepths)
                         args = inspect.getargvalues(frame)
                         self.trace_in(_name(self.functions[ident]),
                                       [],
@@ -195,8 +193,9 @@ class Tracer(object):
                         # print frame
                         # print self.framemaxdepths
                         if self.framemaxdepths and frame.f_back is self.framemaxdepths[-1][0]:
-                            print "popping %s" % frame.f_back
+                            #print "popping %s" % frame.f_back
                             self.framemaxdepths.pop()
+                            print "popped %s, limit now %s" % (frame.f_back, self._min_depths())
 
             elif event == 'exception':
                 ident = self._get_id(frame)
@@ -206,8 +205,8 @@ class Tracer(object):
                     self.trace_out(arg[0], exception=True)
                     # print frame.f_back
                     if self.framemaxdepths and frame.f_back is self.framemaxdepths[-1][0]:
-                        print "popping %s" % frame.f_back
                         self.framemaxdepths.pop()
+                        print "popped %s, limit now %s" % (frame.f_back, self._min_depths())
 
         except:
             raise
