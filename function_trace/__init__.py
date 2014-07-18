@@ -38,6 +38,8 @@ indentchar = "|   "
 
 
 def _name(f):
+    '''Get an appropriate name for the object, for printing to the trace log'''
+
     nattr = None
     mattr = getattr(f, '__module__', None)
     if mattr:
@@ -79,9 +81,10 @@ class Formatter(object):
 
 
 def _get_function_mapping(o):
-    '''Gets the func_code object for the given object if it's a function
-       or method, otherwise the instance (that presumably has a
-       __call__ method).
+    '''Returns a 2-tuple, with the first element being the object
+       belonging to the function/method that can be recognized from
+       the Frame info, the second element is an object that contains
+       info that can be printed to the trace log.
 
     '''
     # for regular functions, the identifier is the code object that appears in the frame
@@ -111,7 +114,8 @@ class Tracer(object):
     def _get_functions(self, functions, depths):
         '''sets some attributes:  
            functions = mapping of identifiers to functions
-           depths = mapping of identifiers to depth'''
+           depths = mapping of identifiers to depth
+        '''
         self.functions = {}
         self.depths = {}
         for f in functions:
@@ -121,34 +125,29 @@ class Tracer(object):
                 self.depths[ident] = depths[f]
 
     def __init__(self, functions, formatter=None, depths=None):
-        self.level = 0
+        self.level = 0  # stack depth in the trace log
         self.formatter = formatter or Formatter()
-        self.lastframe = None
+        self.exception_frame = None
         self.framemaxdepths = []
         self._get_functions(functions, depths or {})
-        #self.additional_depth = None
 
     def _get_id(self, frame):
+        '''
+        Given a frame, figure out what function/method is being called. 
+        '''
         f = frame.f_code
         if f in self.functions:
-            return f
+            return f  # if it's in the functions dict, we know it's correct
         else:
+            # it could be an object that implements __call__.  Find __call__.
             args, varargs, keywords, localz = inspect.getargvalues(frame)
- 
             if args:
-                # print "%s args %s" % (frame.f_code, args)
-                # filename, lineno, function, code_context, index = inspect.getframeinfo(frame)
-
                 try:
-                    inst = localz[args[0]]
-                except BaseException as e:
-                    # print e
-                    return None
-                try:
-                    if inst and hasattr(inst, '__call__')\
-                       and hashable(inst):
-                        return inst.__call__
-                except:
+                    # first arg is self, the instance
+                    cf = localz[args[0]].__call__
+                    if cf.im_func.func_code is f and cf in self.functions:
+                        return cf
+                except BaseException:
                     pass
             return None
 
@@ -160,7 +159,7 @@ class Tracer(object):
         try:
             if event == 'call':
                 ident = self._get_id(frame)
-                if ident in self.functions:
+                if ident:
                     additional_depth = self.depths.get(ident, None)
                     
                     # print depths
@@ -168,45 +167,49 @@ class Tracer(object):
 
                     # print "min depth: %s" % min_depth_limit
                     if additional_depth is not None:
-                        min_depth_limit = min(min_depth_limit, self.level + additional_depth)
+                        if self.level + additional_depth < min_depth_limit:
+                            min_depth_limit = self.level + additional_depth
+                            self.framemaxdepths.append((frame.f_back, min_depth_limit))
+                            #print "new depth limit %s from %s. %s" % (min_depth_limit, ident, self.framemaxdepths)
 
                     if self.level < min_depth_limit:
-                        if additional_depth is not None:
-                            self.framemaxdepths.append((frame.f_back, min_depth_limit))
-                            print "new depth limit %s from %s. %s" % (min_depth_limit, ident, self.framemaxdepths)
                         args = inspect.getargvalues(frame)
                         self.trace_in(_name(self.functions[ident]),
                                       [],
                                       args.locals)
                         self.level += 1
-                    else:
-                        return None
 
             elif event == 'return':
-                ident = self._get_id(frame)
-                if ident in self.functions:
-                    if self.lastframe is frame:
-                        self.lastframe = None
+                # print frame.f_code
+                if self._get_id(frame):
+                    #print "returning %s" % self._get_id(frame)
+                    if self.exception_frame is frame:
+                        self.exception_frame = None
                     else:
-                        self.level -= 1
-                        self.trace_out(arg)
+                        #print self.level
+                        if self.level < self._min_depths():
+                            self.level -= 1
+                            self.trace_out(arg)
                         # print frame
                         # print self.framemaxdepths
                         if self.framemaxdepths and frame.f_back is self.framemaxdepths[-1][0]:
                             #print "popping %s" % frame.f_back
                             self.framemaxdepths.pop()
-                            print "popped %s, limit now %s" % (frame.f_back, self._min_depths())
+                            #print "popped %s, limit now %s" % (frame.f_back, self._min_depths())
 
             elif event == 'exception':
-                ident = self._get_id(frame)
-                if ident in self.functions:
-                    self.lastframe = frame
-                    self.level -= 1
-                    self.trace_out(arg[0], exception=True)
+                if self._get_id(frame):
+                    # since both return and exception events get called for exceptions,
+                    # save this frame so that we know it's the same trace entry when we get the
+                    # return event
+                    self.exception_frame = frame
+                    if self.level < self._min_depths():
+                        self.level -= 1
+                        self.trace_out(arg[0], exception=True)
                     # print frame.f_back
                     if self.framemaxdepths and frame.f_back is self.framemaxdepths[-1][0]:
                         self.framemaxdepths.pop()
-                        print "popped %s, limit now %s" % (frame.f_back, self._min_depths())
+                        #print "popped %s, limit now %s" % (frame.f_back, self._min_depths())
 
         except:
             raise
