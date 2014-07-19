@@ -14,12 +14,12 @@ Usage
 =====
 
 Trace blocks of code with the ``trace_on`` context manager.  It
-accepts one positional argument, a list of modules and classes to be
-traced.  When a class is traced, that includes all the methods defined
-in that class, but not inherited methods.  When a module is traced,
-that includes all the functions in that module, but does not include
-any class methods defined in that module (you must specify the class
-separately).
+accepts either a list of functions to be traced, or a custom
+tracer object.  When a class is traced, that includes all the methods
+defined in that class, but not inherited methods.  When a module is
+traced, that includes all the functions in that module, but does not
+include any class methods defined in that module (you must specify the
+class separately).
 
 By default, the trace output is printed to stdout.  You can modify
 this behavior by replacing ``function_trace.tracer`` with a function
@@ -33,36 +33,37 @@ the exception.
 
 Options
 -------
-
-* ``include_hidden`` if set to True, also trace functions whose name
-  starts with ``_``.  Note, the ``__repr__`` function will never be
-  traced.
-* ``depths`` a dict where the keys are functions/methods and the
-  values are integers representing the depth to which you want to
-  trace that function/method.  For example a depth of 0 means "do not
-  trace this function at all", even if it calls functions that are
-  being traced.  A depth of 1 will trace this function but skip all
-  tracing until it returns.  A depth of 2 will trace another level
-  deeper.  Note, the depths represent the depth of the trace output,
-  NOT the python call stack.
 * ``tracer`` lets you specify a custom tracer object.  The simplest
   way to create it is to extend the ``Tracer`` class and override the
   ``trace_in`` and ``trace_out`` methods.  With a customm tracer you
   can do things like write the trace in any format, like HTML, JSON,
-  XML etc, or send it over the network.
+  XML etc, or send it over the network. The common options to the
+  builtin Tracer classes are:
 
+   * ``include_hidden`` if set to True, also trace functions whose
+     name starts with ``_``.  Note, the ``__repr__`` function will
+     never be traced, and currently any tracing of functions starting
+     with ``__`` are disabled.
+   * ``depths`` a dict where the keys are functions/methods and the
+     values are integers representing the depth to which you want to
+     trace that function/method.  For example a depth of 0 means "do
+     not trace this function at all", even if it calls functions that
+     are being traced.  A depth of 1 will trace this function but skip
+     all tracing until it returns.  A depth of 2 will trace another
+     level deeper.  Note, the depths represent the depth of the trace
+     output, NOT the python call stack.
 
 Examples
 ========
 
 ::
 
-  from function_trace import trace_on
+  from function_trace import trace_on, StdoutTracer, all, mapcat
 
-  with trace_on([Class1, module1, Class2, module2], include_hidden=True,
-                depths={module1.check_thing: 1,
-                        module2.unimportant_thing: 0
-                        Class1.silly_thing: 0}):
+  with trace_on(StdoutTracer(mapcat(all, [Class1, module1, Class2, module2]), include_hidden=True,
+                    depths={module1.check_thing: 1,
+                            module2.unimportant_thing: 0
+                            Class1.silly_thing: 0})):
       module1.function1("arg1", "arg2", option=True)
       x = new Class1()
       x.method1(arg1, arg2)
@@ -94,9 +95,5 @@ Output
   object).
 
 * By default, exceptions that are raised by a function are printed as
-  its return value.  This makes it possible to see an exception
-  propagating down the stack. It is currently not possible to
-  distinguish between a function call that returns an exception
-  object, and one that raises that exception object (but functions
-  that intentionally return Exceptions are rare anyway).
- 
+  its return value, prefixed with ``!!!``.  This makes it possible to
+  see an exception propagating down the stack. 
