@@ -238,7 +238,7 @@ class PerThreadFileTracer(Tracer):
         self.outputfile.write(self.formatter.format_output(self.level-1, r, exception) + "\n")
 
     def close(self):
-        print "closing " + str(self.outputfile)
+        # print "closing " + str(self.outputfile)
         self.outputfile.close()
 
 
