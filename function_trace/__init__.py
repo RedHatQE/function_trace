@@ -154,6 +154,17 @@ class Tracer(object):
     def level(self):
         return len(self.tracedframes)
 
+    def _method_or_function_call(self, frame, ident):
+        f = self.functions[ident]
+        args = inspect.getargvalues(frame)
+        if inspect.ismethod(f):
+            locs = args.locals.copy()
+            f_self = locs.pop(args.args[0])
+            self.trace_in("%s.%s" % (repr(f_self), f.__name__), [], locs)
+        else:
+            # regular function
+            self.trace_in(_name(f), [], args.locals)
+
     def tracefunc(self, frame, event, arg):
         try:
             if event == 'call':
@@ -168,10 +179,7 @@ class Tracer(object):
                                 min_depth_limit = next_depth_limit
 
                     if self.level < min_depth_limit:
-                        args = inspect.getargvalues(frame)
-                        self.trace_in(_name(self.functions[ident]),
-                                      [],
-                                      args.locals)
+                        self._method_or_function_call(frame, ident)
                     if self.level <= min_depth_limit:
                         self.tracedframes.append((frame.f_back, min_depth_limit, self.level < min_depth_limit))
 
@@ -198,7 +206,8 @@ class Tracer(object):
                         self.trace_out(arg[0], exception=True)
                     self.tracedframes.pop()
         except:
-            pass # just swallow errors to avoid interference with traced processes
+            pass  # just swallow errors to avoid interference with traced processes
+            # raise  # for debugging
         return self.tracefunc
 
     def close(self):
