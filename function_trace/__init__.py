@@ -181,7 +181,8 @@ class Tracer(object):
                     if self.level < min_depth_limit:
                         self._method_or_function_call(frame, ident)
                     if self.level <= min_depth_limit:
-                        self.tracedframes.append((frame.f_back, min_depth_limit, self.level < min_depth_limit))
+                        self.tracedframes.append((frame.f_back, min_depth_limit,
+                                                  self.level < min_depth_limit))
 
             elif event == 'return':
                 # print frame.f_code
@@ -221,15 +222,17 @@ class StdoutTracer(Tracer):
 
     def trace_in(self, f, args, kwargs):
         print self.formatter.format_input(self.level, f, args, kwargs)
+        sys.stdout.flush()
 
     def trace_out(self, r, exception=False):
-        print self.formatter.format_output(self.level-1, r, exception)
+        print self.formatter.format_output(self.level - 1, r, exception)
+        sys.stdout.flush()
 
 
 class PerThreadFileTracer(Tracer):
     '''Print trace to a file. To get thread safety, use a different
        instance of this tracer for each thread.'''
-    def __init__(self,  functions, formatter=None, depths=None, filename=None):
+    def __init__(self, functions, formatter=None, depths=None, filename=None):
         super(PerThreadFileTracer, self).__init__(functions, formatter=formatter, depths=depths)
         d = os.path.dirname(filename)
         if not os.path.exists(d):
@@ -244,7 +247,7 @@ class PerThreadFileTracer(Tracer):
         self.outputfile.write(self.formatter.format_input(self.level, f, args, kwargs) + "\n")
 
     def trace_out(self, r, exception=False):
-        self.outputfile.write(self.formatter.format_output(self.level-1, r, exception) + "\n")
+        self.outputfile.write(self.formatter.format_output(self.level - 1, r, exception) + "\n")
 
     def close(self):
         # print "closing " + str(self.outputfile)
