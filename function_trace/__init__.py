@@ -98,8 +98,13 @@ def _get_function_mapping(o):
     # the module and the function's name is '__call__'.  The first arg is what's important
     # (the instance)
     if hasattr(o, '__call__'):
-        #print "got mm %s" % o
-        return (o.__call__, o.__call__)
+        # print "got mm %s" % o
+        try:
+            # return (o.__call__.im_func.func_code, o.__call__)
+            return (o.__call__, o.__call__)
+        except:
+            # print o
+            return (None, None)
     return None
 
 
@@ -111,11 +116,17 @@ class Tracer(object):
         '''
         self.functions = {}
         self.depths = {}
+        functions = set(functions) | set(depths.keys())
         for f in functions:
             ident, info_obj = _get_function_mapping(f)
             self.functions[ident] = info_obj
             if f in depths:
                 self.depths[ident] = depths[f]
+        # self.count = 0
+        # self.skipped = 0
+        self.min_depth = sys.maxint
+        # self.counts = {}
+        self.no_trace = set()
 
     def __init__(self, functions, formatter=None, depths=None):
         self.formatter = formatter or Formatter()
@@ -128,7 +139,9 @@ class Tracer(object):
         '''
         Given a frame, figure out what function/method is being called.
         '''
+
         f = frame.f_code
+        # self.counts[f] = self.counts.get(f, 0) + 1
         if f in self.functions:
             return f  # if it's in the functions dict, we know it's correct
         else:
@@ -166,8 +179,12 @@ class Tracer(object):
             self.trace_in(_name(f), [], args.locals)
 
     def tracefunc(self, frame, event, arg):
+        # self.counts[event] = self.counts.get(event, 0) + 1
         try:
-            if event == 'call':
+            if event == 'call' and frame.f_code not in self.no_trace:
+                # return
+                # f = frame.f_code
+                # ident = f if f in self.functions else None
                 ident = self._get_id(frame)
                 if ident:
                     additional_depth = self.depths.get(ident, None)
@@ -183,6 +200,13 @@ class Tracer(object):
                     if self.level <= min_depth_limit:
                         self.tracedframes.append((frame.f_back, min_depth_limit,
                                                   self.level < min_depth_limit))
+                        if min_depth_limit < self.min_depth:
+                            self.min_depth = min_depth_limit
+                else:
+                    self.no_trace.add(frame.f_code)
+                    if self.level >= self.min_depth:
+                        # print "cut off! %s:%s" % (frame.f_code.co_filename, frame.f_lineno)
+                        return None
 
             elif event == 'return':
                 # print frame.f_code
@@ -193,7 +217,10 @@ class Tracer(object):
                     if self.tracedframes[-1][2]:
                         # self.trace_out("%s: %s" % (self._get_id(frame), arg))
                         self.trace_out(arg)
-                    self.tracedframes.pop()
+                    _x, min_depth_limit, _y = self.tracedframes.pop()
+                    if self.min_depth == min_depth_limit:
+                        # recalculate min depth
+                        self.min_depth = self._min_depths()
 
             elif event == 'exception':
                 if self.tracedframes and self.tracedframes[-1][0] is frame.f_back:
@@ -205,14 +232,22 @@ class Tracer(object):
                     if self.tracedframes[-1][2]:
                         # self.trace_out("%s: %s" % (self._get_id(frame), arg))
                         self.trace_out(arg[0], exception=True)
-                    self.tracedframes.pop()
+                    _x, min_depth_limit, _y = self.tracedframes.pop()
+                    if self.min_depth == min_depth_limit:
+                        # recalculate min depth
+                        self.min_depth = self._min_depths()
+
         except:
-            pass  # just swallow errors to avoid interference with traced processes
-            # raise  # for debugging
+            # pass  # just swallow errors to avoid interference with traced processes
+            raise  # for debugging
         return self.tracefunc
 
     def close(self):
         pass
+        # print "count=%s, skipped=%s" % (self.count, self.skipped)
+        # counts = sorted(self.counts.iteritems(), key=operator.itemgetter(1))
+        # counts = counts[-50:]
+        # print "count=%s, skipped=%s, counts=%s" % (self.count, self.skipped, counts)
 
 
 class StdoutTracer(Tracer):
@@ -227,6 +262,11 @@ class StdoutTracer(Tracer):
     def trace_out(self, r, exception=False):
         print self.formatter.format_output(self.level - 1, r, exception)
         sys.stdout.flush()
+
+    def close(self):
+        # print "closing " + str(self.outputfile)
+        # print "count=%s, skipped=%s, counts=%s" % (self.count, self.skipped, self.counts)
+        pass
 
 
 class PerThreadFileTracer(Tracer):
@@ -251,6 +291,7 @@ class PerThreadFileTracer(Tracer):
 
     def close(self):
         # print "closing " + str(self.outputfile)
+        # print "count=%s, skipped=%s, counts=%s" % (self.count, self.skipped, self.counts)
         self.outputfile.close()
 
 
@@ -285,6 +326,18 @@ def all(o, include_hidden=False):
         else:
             return list(x)
     return reduce(r, inspect.getmembers(o, callable), [])
+
+
+def add_all_at_depth(dct, module, lvl):
+    '''takes a depth dict, module, and level, and adds all the functions
+       in the module to the depth dict at the given level.
+
+       Returns: the dict with new values
+    '''
+    fns = all(module)
+    for f in fns:
+        dct[f] = lvl
+    return dct
 
 
 @contextmanager
